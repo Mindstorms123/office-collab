@@ -128,7 +128,7 @@ export default function DocEditor() {
           <span style={s.title}>{document?.title || 'Lade Dokument...'}</span>
           <span style={s.badge}>👥 {users} online</span>
           <span style={s.badge}>{document?.type?.toUpperCase() || ''}</span>
-          <ExportButton docId={docId} userId={userId} />
+          <ExportButton docId={docId} userId={userId} format={document?.type || 'pptx'} />
         </div>
         <div style={s.content}>
           <div style={s.docView}>

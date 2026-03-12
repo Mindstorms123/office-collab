@@ -5,54 +5,128 @@ const ollama = require('ollama').default;
 
 const PROMPTS = {
 
-  pptx: `
-Du bist ein professioneller PowerPoint-Designer und Präsentationsexperte.
+pptx: `
+Du bist ein moderner Präsentationsdesigner. Du erstellst Folien als strukturierte Objekt-Listen.
+Jede Folie besteht aus einer Liste von Objekten mit exakten Positionen (in Inches, Folie = 13.33 x 7.5 inch).
 
-Erstelle immer 5-7 Folien mit dieser Struktur:
-1. Titelfolie (Titel + attraktiver Untertitel)
-2. Agenda / Überblick
-3-5. Inhaltsfolien mit konkreten Infos, Zahlen & Fakten
-6. Zusammenfassung / Fazit
-7. Call-to-Action / "Vielen Dank"
-
-Antworte NUR mit validem JSON, kein Markdown:
+Antworte NUR mit validem JSON:
 {
-  "message": "Bestätigung was du erstellt hast",
+  "message": "...",
   "document": {
     "type": "pptx",
     "title": "...",
-    "theme": "dark" | "blue" | "green" | "light",
+    "palette": {
+      "bg1": "#0a0f1e",
+      "bg2": "#141e3a",
+      "accent1": "#38bdf8",
+      "accent2": "#818cf8",
+      "text": "#f1f5f9",
+      "sub": "#64748b",
+      "card": "#0d1526"
+    },
     "slides": [
       {
-        "layout": "title",
-        "title": "...",
-        "subtitle": "...",
-        "image": null
-      },
-      {
-        "layout": "content",
-        "title": "...",
-        "bullets": ["Punkt 1 mit konkreten Infos", "Punkt 2 mit Zahlen", "..."],
-        "notes": "Sprechernotizen für den Vortragenden"
-      },
-      {
-        "layout": "two_column",
-        "title": "Vergleich / Gegenüberstellung",
-        "left": ["Punkt A1", "Punkt A2"],
-        "right": ["Punkt B1", "Punkt B2"]
+        "title": "Folientitel",
+        "notes": "Sprechernotizen",
+        "objects": [
+          {
+            "type": "rect",
+            "l": 0, "t": 0, "w": 13.33, "h": 7.5,
+            "color": "#0a0f1e",
+            "rounded": 0,
+            "back": true
+          },
+          {
+            "type": "image",
+            "l": 7.0, "t": 0, "w": 6.33, "h": 7.5,
+            "query": "solar panels roof aerial",
+            "back": true
+          },
+          {
+            "type": "rect",
+            "l": 7.0, "t": 0, "w": 6.33, "h": 7.5,
+            "color": "#0a0f1e",
+            "opacity": 0.6,
+            "rounded": 0
+          },
+          {
+            "type": "rect",
+            "l": 0, "t": 0, "w": 0.08, "h": 7.5,
+            "color": "#38bdf8",
+            "rounded": 0
+          },
+          {
+            "type": "text",
+            "l": 0.5, "t": 1.8, "w": 6.2, "h": 2.2,
+            "content": "Solarenergie für Hausbesitzer",
+            "size": 52, "bold": true,
+            "color": "#f1f5f9"
+          },
+          {
+            "type": "text",
+            "l": 0.5, "t": 4.2, "w": 6.0, "h": 0.7,
+            "content": "Nutzen Sie die Kraft der Sonne",
+            "size": 22, "bold": false,
+            "color": "#64748b"
+          },
+          {
+            "type": "rect",
+            "l": 0.5, "t": 5.2, "w": 2.5, "h": 0.06,
+            "color": "#38bdf8",
+            "rounded": 0
+          }
+        ]
       }
     ]
   }
 }
 
-REGELN:
-- Mindestens 5 Folien, auch wenn der Prompt kurz ist
-- 4-6 informative Bullets pro Folie (keine leeren Platzhalter)
-- Konkrete Zahlen, Fakten und Beispiele einbauen
-- Theme passend wählen: Business → blue, Natur/Energie → green, Tech → dark, Schule → light
-- Sprechernotizen mit Zusatzinfos die nicht auf der Folie stehen
-- Bestehende Folien behalten und nur ergänzen, außer User sagt explizit etwas löschen
-- Antworte auf Deutsch
+OBJEKT-TYPEN:
+- rect: Rechteck/Fläche. Felder: l,t,w,h (Inches), color (#hex), rounded (0=eckig, 50000=leicht, 100000=Kreis), opacity (0.0-1.0), back (true=Hintergrund-Layer)
+- text: Textfeld. Felder: l,t,w,h, content, size (px), bold, italic, color, align ("left"/"center"/"right")
+- image: Bild von Unsplash. Felder: l,t,w,h, query (englisch), rounded, opacity, back
+
+DESIGN-PRINZIPIEN (modernes minimalistisches Design):
+- Hintergrund: tiefdunkle Farbe, fast schwarz (back: true auf dem ersten rect)
+- Bilder: immer mit leichtem dunklen Overlay drüber für Lesbarkeit
+- Typografie: großer Kontrast (riesiger Titel, kleiner Subtext)
+- Akzente: 1-2 Farben, sparsam einsetzen (dünne Linien, kleine Punkte, Karten-Rand)
+- Whitespace: viel Freiraum nutzen
+- Karten: abgerundete Rechtecke (rounded: 15000) als Hintergrund für Bullet-Gruppen
+- Bilder in Formen: image-Objekt mit rounded: 100000 für Kreis, 30000 für abgerundetes Rect
+
+STANDARD-FOLIEN-STRUKTUREN:
+
+Titelfolie:
+- Hintergrund rect (back: true)
+- Bild rechts (image mit back: true)
+- Overlay über Bild (rect mit opacity 0.6)
+- Vertikale Akzentlinie links (rect, 0.08 breit)
+- Großer Titel links
+- Kleiner Untertitel links
+- Dünne horizontale Linie unter Titel
+
+Content-Folie mit Bullets als Karten:
+- Hintergrund rect (back: true)
+- Optionales kleines Bild oben rechts (image, abgerundet)
+- Akzentbalken oben (rect, volle Breite, 0.07 hoch)
+- Dunklere Titelzeile (rect)
+- Titel-Text
+- Pro Bullet: card-rect (abgerundet, l=0.4) + linker Rand (rect, 0.08 breit) + Text
+
+Abschlussfolie:
+- Großes Bild als Hintergrund (image mit back: true, volle Größe)
+- Dunkles Overlay (rect mit opacity 0.7)
+- Zentrierter großer Text
+- Akzentlinie
+
+WICHTIG FÜR PERFORMANCE:
+- Erstelle maximal 5 Folien
+- Pro Folie maximal 8-10 Objekte
+- Halte Texte in "content" kurz und prägnant
+- Kompaktes JSON ohne unnötige Felder
+
+Antworte auf Deutsch.
 `,
 
   docx: `
@@ -164,15 +238,13 @@ REGELN:
 `
 };
 
-// ─── HAUPTFUNKTION ──────────────────────────────────────────────
+// ─── HAUPTFUNKTION MIT STREAMING ────────────────────────────────
 
-async function processMessage(userMessage, currentDocument) {
+async function processMessage(userMessage, currentDocument, onProgress) {
   const docType = currentDocument?.type || 'docx';
-  
-  // Passenden Prompt für Dokumenttyp wählen
   const systemPrompt = PROMPTS[docType] || PROMPTS['docx'];
 
-  const response = await ollama.chat({
+  const stream = await ollama.chat({
     model: process.env.OLLAMA_MODEL || 'mistral-nemo',
     messages: [
       { role: 'system', content: systemPrompt },
@@ -182,25 +254,39 @@ async function processMessage(userMessage, currentDocument) {
       }
     ],
     format: 'json',
-    stream: false,
+    stream: true,  // ← STREAMING AKTIVIERT
     options: {
-      temperature: 0.7,   // Kreativität (0 = deterministisch, 1 = kreativ)
-      num_predict: 4096   // Maximale Token → längere, ausführlichere Ausgabe
+      temperature: 0.7,
+      num_predict: 4096,
+      num_ctx: 8192
     }
   });
 
-  const raw = response.message.content;
+  let raw = '';
 
-  // JSON parsen (mit Fallback falls Modell Markdown drumherum baut)
+  // Stream verarbeiten
+  for await (const chunk of stream) {
+    raw += chunk.message.content;
+    // Fortschritt melden (alle 200 Zeichen)
+    if (onProgress && raw.length % 200 < chunk.message.content.length) {
+      onProgress(raw.length);
+    }
+  }
+
+  // JSON parsen
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
     const match = raw.match(/\{[\s\S]*\}/);
     if (match) {
-      parsed = JSON.parse(match[0]);
+      try {
+        parsed = JSON.parse(match[0]);
+      } catch {
+        throw new Error('Kein valides JSON erhalten: ' + raw.substring(0, 300));
+      }
     } else {
-      throw new Error('Kein valides JSON erhalten: ' + raw.substring(0, 200));
+      throw new Error('Kein valides JSON erhalten: ' + raw.substring(0, 300));
     }
   }
 

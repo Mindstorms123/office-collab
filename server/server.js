@@ -1,23 +1,26 @@
 require('dotenv').config();
-const express = require('express');
-const http = require('http');
+const express  = require('express');
+const http     = require('http');
 const { Server } = require('socket.io');
-const cors = require('cors');
+const cors     = require('cors');
 const { v4: uuidv4 } = require('uuid');
-const Y = require('yjs');
+const Y        = require('yjs');
 const { spawn } = require('child_process');
-const path = require('path');
-const fs = require('fs');
+const path     = require('path');
+const fs       = require('fs');
+const os       = require('os');
 
-const sessionManager = require('./session-manager');
+const sessionManager     = require('./session-manager');
 const { processMessage } = require('./ai-handler');
 
-const app = express();
+const app    = require('express')();
 const server = http.createServer(app);
+server.timeout = 300000;
 
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
-const PORT = process.env.PORT || 3000;
+const PORT       = process.env.PORT       || 3000;
 
+// ─── Socket.IO ───────────────────────────────────────────────────
 const io = new Server(server, {
   cors: { origin: CLIENT_URL, methods: ['GET', 'POST'], credentials: true }
 });
@@ -25,7 +28,7 @@ const io = new Server(server, {
 app.use(cors({ origin: CLIENT_URL, credentials: true }));
 app.use(express.json());
 
-// Y.js Dokumente (in-memory; für Produktion: Redis oder DB)
+// ─── Y.js State ──────────────────────────────────────────────────
 const ydocs = new Map();
 
 function getYdoc(docId) {
@@ -34,49 +37,42 @@ function getYdoc(docId) {
 }
 
 function getDocumentState(docId) {
-  const ydoc = getYdoc(docId);
-  const ymap = ydoc.getMap('doc');
-  const raw = ymap.get('data');
+  const raw = getYdoc(docId).getMap('doc').get('data');
   return raw ? JSON.parse(raw) : null;
 }
 
 function setDocumentState(docId, data) {
   const ydoc = getYdoc(docId);
-  const ymap = ydoc.getMap('doc');
-  ydoc.transact(() => {
-    ymap.set('data', JSON.stringify(data));
-  });
+  ydoc.transact(() => ydoc.getMap('doc').set('data', JSON.stringify(data)));
   return Y.encodeStateAsUpdate(ydoc);
 }
 
-// ─── REST API ───────────────────────────────────────────────────
+function getEmptyDocument(type) {
+  const defaults = {
+    docx:  { type: 'docx',  title: 'Neues Dokument',    sections: [] },
+    pptx:  { type: 'pptx',  title: 'Neue Präsentation', slides: [] },
+    xlsx:  { type: 'xlsx',  title: 'Neue Tabelle',
+             sheets: [{ name: 'Sheet1', headers: ['Spalte A', 'Spalte B'], rows: [], formulas: {} }] }
+  };
+  return defaults[type] || defaults.docx;
+}
+
+// ─── REST API ────────────────────────────────────────────────────
 
 // Neues Dokument erstellen
 app.post('/api/document', (req, res) => {
   const { userId = uuidv4(), type = 'docx' } = req.body;
-
-  const docId = sessionManager.createDocument(userId, type);
+  const docId  = sessionManager.createDocument(userId, type);
   const linkId = sessionManager.createShareLink(docId, 'edit');
-
-  // Leeres Dokument initialisieren
-  const emptyDoc = getEmptyDocument(type);
-  setDocumentState(docId, emptyDoc);
-
-  res.json({
-    docId,
-    userId,
-    shareUrl: `${CLIENT_URL}/doc/${linkId}`
-  });
+  setDocumentState(docId, getEmptyDocument(type));
+  res.json({ docId, userId, shareUrl: `${CLIENT_URL}/doc/${linkId}` });
 });
 
 // Via Share-Link beitreten
 app.get('/api/join/:linkId', (req, res) => {
-  const { linkId } = req.params;
   const userId = req.query.userId || uuidv4();
-
-  const result = sessionManager.joinViaLink(linkId, userId);
-  if (!result) return res.status(404).json({ error: 'Link ungültig' });
-
+  const result = sessionManager.joinViaLink(req.params.linkId, userId);
+  if (!result) return res.status(404).json({ error: 'Link ungültig oder abgelaufen' });
   res.json({ ...result, userId });
 });
 
@@ -90,37 +86,64 @@ app.post('/api/export', (req, res) => {
   }
 
   const docData = getDocumentState(docId);
-  if (!docData) return res.status(404).json({ error: 'Dokument leer' });
+  if (!docData) return res.status(404).json({ error: 'Dokument ist leer' });
 
-  const outputPath = path.join('/tmp', `${docId}_${Date.now()}.${format}`);
-  const py = spawn('python3', [
-    path.join(__dirname, 'python/render_office.py'),
-    outputPath,
-    format
-  ]);
+  // os.tmpdir() → funktioniert auf Windows UND Linux/Mac
+  const outputPath = path.join(os.tmpdir(), `${docId}_${Date.now()}.${format}`);
 
+  // Windows: 'python' statt 'python3'
+  const pythonCmd  = process.platform === 'win32' ? 'python' : 'python3';
+  const scriptPath = path.join(__dirname, 'python', 'render_office.py');
+
+  console.log(`[Export] Format: ${format} | Datei: ${outputPath}`);
+  console.log(`[Export] Python: ${pythonCmd} ${scriptPath}`);
+
+  const py = spawn(pythonCmd, [scriptPath, outputPath, format], {
+  env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
+});
   py.stdin.write(JSON.stringify(docData));
   py.stdin.end();
 
   let pyError = '';
-  py.stderr.on('data', (d) => { pyError += d.toString(); });
+  let pyOut   = '';
+
+  py.stdout.on('data', (d) => { pyOut   += d.toString(); });
+  py.stderr.on('data', (d) => {
+    pyError += d.toString();
+    console.error('[Python STDERR]', d.toString());
+  });
+
+  py.on('error', (err) => {
+    console.error('[Python spawn error]', err.message);
+    return res.status(500).json({
+      error: 'Python konnte nicht gestartet werden',
+      detail: err.message + '\nInstalliert? Pfad korrekt?'
+    });
+  });
 
   py.on('close', (code) => {
+    console.log(`[Python exit code] ${code}`);
+    if (pyOut) console.log('[Python STDOUT]', pyOut);
+
     if (code !== 0) {
-      console.error('Python Error:', pyError);
       return res.status(500).json({ error: 'Export fehlgeschlagen', detail: pyError });
     }
-    const filename = `${docData.title || 'dokument'}.${format}`;
-    res.download(outputPath, filename, () => {
+
+    if (!fs.existsSync(outputPath)) {
+      return res.status(500).json({ error: 'Datei wurde nicht erstellt', detail: pyError });
+    }
+
+    const filename = `${(docData.title || 'dokument').replace(/[^a-zA-Z0-9äöüÄÖÜß\s]/g, '')}.${format}`;
+    res.download(outputPath, filename, (err) => {
+      if (err) console.error('[Download Fehler]', err.message);
       fs.unlink(outputPath, () => {});
     });
   });
 });
 
-// ─── SOCKET.IO ──────────────────────────────────────────────────
-
+// ─── SOCKET.IO ───────────────────────────────────────────────────
 io.on('connection', (socket) => {
-  let currentDocId = null;
+  let currentDocId  = null;
   let currentUserId = null;
 
   socket.on('join', ({ docId, userId }) => {
@@ -128,19 +151,14 @@ io.on('connection', (socket) => {
       socket.emit('error', { message: 'Keine Berechtigung' });
       return;
     }
-
-    currentDocId = docId;
+    currentDocId  = docId;
     currentUserId = userId;
     socket.join(docId);
 
-    const ydoc = getYdoc(docId);
-    const initState = Y.encodeStateAsUpdate(ydoc);
-
     socket.emit('init', {
-      state: Array.from(initState),
+      state: Array.from(Y.encodeStateAsUpdate(getYdoc(docId))),
       users: io.sockets.adapter.rooms.get(docId)?.size || 1
     });
-
     io.to(docId).emit('users-update', {
       count: io.sockets.adapter.rooms.get(docId)?.size || 1
     });
@@ -160,18 +178,19 @@ io.on('connection', (socket) => {
     const currentDoc = getDocumentState(docId);
     if (!currentDoc) return;
 
+    socket.emit('ai-thinking', true);
     try {
-      socket.emit('ai-thinking', true);
       const aiResult = await processMessage(message, currentDoc);
 
       if (aiResult.document) {
         const update = setDocumentState(docId, aiResult.document);
-        io.to(docId).emit('yjs-update', { update: Array.from(update) });
+        io.to(docId).emit('yjs-update',       { update: Array.from(update) });
         io.to(docId).emit('document-updated', { document: aiResult.document });
       }
-
       socket.emit('ai-response', { message: aiResult.message });
+
     } catch (err) {
+      console.error('[KI Fehler]', err.message);
       socket.emit('ai-error', { message: 'KI-Fehler: ' + err.message });
     } finally {
       socket.emit('ai-thinking', false);
@@ -180,28 +199,15 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     if (currentDocId) {
-      const count = io.sockets.adapter.rooms.get(currentDocId)?.size || 0;
-      io.to(currentDocId).emit('users-update', { count });
+      io.to(currentDocId).emit('users-update', {
+        count: io.sockets.adapter.rooms.get(currentDocId)?.size || 0
+      });
     }
   });
 });
 
-// ─── Hilfsfunktionen ─────────────────────────────────────────────
-
-function getEmptyDocument(type) {
-  if (type === 'docx') {
-    return { type: 'docx', title: 'Neues Dokument', sections: [] };
-  } else if (type === 'pptx') {
-    return {
-      type: 'pptx', title: 'Neue Präsentation',
-      slides: [{ title: 'Titel', bullets: ['Untertitel'], layout: 'title_content', notes: '' }]
-    };
-  } else if (type === 'xlsx') {
-    return {
-      type: 'xlsx', title: 'Neue Tabelle',
-      sheets: [{ name: 'Sheet1', headers: ['Spalte A', 'Spalte B'], rows: [], formulas: {} }]
-    };
-  }
-}
-
-server.listen(PORT, () => console.log(`✅ Server auf http://localhost:${PORT}`));
+server.listen(PORT, () => {
+  console.log(`✅ Server läuft auf http://localhost:${PORT}`);
+  console.log(`📁 Temp-Ordner: ${os.tmpdir()}`);
+  console.log(`🐍 Python-Befehl: ${process.platform === 'win32' ? 'python' : 'python3'}`);
+});
