@@ -13,20 +13,25 @@ const os       = require('os');
 const sessionManager     = require('./session-manager');
 const { processMessage } = require('./ai-handler');
 
-const app    = require('express')();
+// ─── App & Server ────────────────────────────────────────────────
+const app    = express();
 const server = http.createServer(app);
-server.timeout = 300000;
+
+server.timeout        = 300000; // 5 Minuten
+server.keepAliveTimeout = 305000;
 
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
 const PORT       = process.env.PORT       || 3000;
 
 // ─── Socket.IO ───────────────────────────────────────────────────
 const io = new Server(server, {
-  cors: { origin: CLIENT_URL, methods: ['GET', 'POST'], credentials: true }
+  cors: { origin: CLIENT_URL, methods: ['GET', 'POST'], credentials: true },
+  pingTimeout:  120000,
+  pingInterval:  25000,
 });
 
 app.use(cors({ origin: CLIENT_URL, credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // ─── Y.js State ──────────────────────────────────────────────────
 const ydocs = new Map();
@@ -49,10 +54,12 @@ function setDocumentState(docId, data) {
 
 function getEmptyDocument(type) {
   const defaults = {
-    docx:  { type: 'docx',  title: 'Neues Dokument',    sections: [] },
-    pptx:  { type: 'pptx',  title: 'Neue Präsentation', slides: [] },
-    xlsx:  { type: 'xlsx',  title: 'Neue Tabelle',
-             sheets: [{ name: 'Sheet1', headers: ['Spalte A', 'Spalte B'], rows: [], formulas: {} }] }
+    docx: { type: 'docx', title: 'Neues Dokument',    sections: [] },
+    pptx: { type: 'pptx', title: 'Neue Präsentation', slides: [],
+            palette: { bg1:'#0a0f1e', bg2:'#141e3a', accent1:'#38bdf8',
+                       accent2:'#818cf8', text:'#f1f5f9', sub:'#64748b', card:'#0d1526' } },
+    xlsx: { type: 'xlsx', title: 'Neue Tabelle',
+            sheets: [{ name: 'Sheet1', headers: ['Spalte A', 'Spalte B'], rows: [], formulas: {} }] }
   };
   return defaults[type] || defaults.docx;
 }
@@ -65,6 +72,7 @@ app.post('/api/document', (req, res) => {
   const docId  = sessionManager.createDocument(userId, type);
   const linkId = sessionManager.createShareLink(docId, 'edit');
   setDocumentState(docId, getEmptyDocument(type));
+  console.log(`[Doc] Erstellt: ${docId} (${type}) von ${userId}`);
   res.json({ docId, userId, shareUrl: `${CLIENT_URL}/doc/${linkId}` });
 });
 
@@ -88,54 +96,50 @@ app.post('/api/export', (req, res) => {
   const docData = getDocumentState(docId);
   if (!docData) return res.status(404).json({ error: 'Dokument ist leer' });
 
-  // os.tmpdir() → funktioniert auf Windows UND Linux/Mac
   const outputPath = path.join(os.tmpdir(), `${docId}_${Date.now()}.${format}`);
-
-  // Windows: 'python' statt 'python3'
   const pythonCmd  = process.platform === 'win32' ? 'python' : 'python3';
   const scriptPath = path.join(__dirname, 'python', 'render_office.py');
 
-  console.log(`[Export] Format: ${format} | Datei: ${outputPath}`);
-  console.log(`[Export] Python: ${pythonCmd} ${scriptPath}`);
+  console.log(`[Export] Format=${format} | Path=${outputPath}`);
 
   const py = spawn(pythonCmd, [scriptPath, outputPath, format], {
-  env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
-});
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
+  });
+
   py.stdin.write(JSON.stringify(docData));
   py.stdin.end();
 
   let pyError = '';
   let pyOut   = '';
 
-  py.stdout.on('data', (d) => { pyOut   += d.toString(); });
+  py.stdout.on('data', (d) => { pyOut += d.toString(); });
   py.stderr.on('data', (d) => {
     pyError += d.toString();
-    console.error('[Python STDERR]', d.toString());
+    console.error('[Python]', d.toString().trim());
   });
 
   py.on('error', (err) => {
-    console.error('[Python spawn error]', err.message);
-    return res.status(500).json({
+    console.error('[Python spawn]', err.message);
+    res.status(500).json({
       error: 'Python konnte nicht gestartet werden',
-      detail: err.message + '\nInstalliert? Pfad korrekt?'
+      detail: err.message
     });
   });
 
   py.on('close', (code) => {
-    console.log(`[Python exit code] ${code}`);
-    if (pyOut) console.log('[Python STDOUT]', pyOut);
+    console.log(`[Python exit] ${code}`);
+    if (pyOut) console.log('[Python stdout]', pyOut.trim());
 
     if (code !== 0) {
       return res.status(500).json({ error: 'Export fehlgeschlagen', detail: pyError });
     }
-
     if (!fs.existsSync(outputPath)) {
-      return res.status(500).json({ error: 'Datei wurde nicht erstellt', detail: pyError });
+      return res.status(500).json({ error: 'Datei nicht erstellt', detail: pyError });
     }
 
-    const filename = `${(docData.title || 'dokument').replace(/[^a-zA-Z0-9äöüÄÖÜß\s]/g, '')}.${format}`;
-    res.download(outputPath, filename, (err) => {
-      if (err) console.error('[Download Fehler]', err.message);
+    const safeName = (docData.title || 'dokument').replace(/[^\w\säöüÄÖÜß-]/g, '').trim();
+    res.download(outputPath, `${safeName}.${format}`, (err) => {
+      if (err) console.error('[Download]', err.message);
       fs.unlink(outputPath, () => {});
     });
   });
@@ -146,6 +150,9 @@ io.on('connection', (socket) => {
   let currentDocId  = null;
   let currentUserId = null;
 
+  console.log(`[Socket] Verbunden: ${socket.id}`);
+
+  // ── Raum beitreten ───────────────────────────────────────────
   socket.on('join', ({ docId, userId }) => {
     if (!sessionManager.hasPermission(docId, userId)) {
       socket.emit('error', { message: 'Keine Berechtigung' });
@@ -162,31 +169,60 @@ io.on('connection', (socket) => {
     io.to(docId).emit('users-update', {
       count: io.sockets.adapter.rooms.get(docId)?.size || 1
     });
+
+    console.log(`[Join] ${userId} → ${docId}`);
   });
 
-  // Y.js Sync
+  // ── Y.js Sync ────────────────────────────────────────────────
   socket.on('yjs-update', ({ docId, update }) => {
     const ydoc = getYdoc(docId);
     Y.applyUpdate(ydoc, new Uint8Array(update));
     socket.to(docId).emit('yjs-update', { update });
   });
 
-  // KI-Chat
+  // ── KI-Chat mit Streaming + Live-Preview ─────────────────────
   socket.on('ai-message', async ({ docId, userId, message }) => {
     if (!sessionManager.hasPermission(docId, userId)) return;
 
     const currentDoc = getDocumentState(docId);
     if (!currentDoc) return;
 
+    console.log(`[KI] Anfrage von ${userId}: "${message.substring(0, 60)}..."`);
     socket.emit('ai-thinking', true);
+
+    // Fortschritt-Callback
+    let lastProgress = 0;
+    const onProgress = (chars) => {
+      if (chars - lastProgress >= 200) {
+        lastProgress = chars;
+        socket.emit('ai-progress', { chars });
+      }
+    };
+
+    // Partial Update – Live-Preview während Generierung
+    let lastPartialSlides = 0;
+    const onPartialUpdate = (partialDoc) => {
+      const newSlides = partialDoc?.slides?.length || 0;
+
+      // Nur senden wenn neue Folien hinzugekommen sind
+      if (newSlides > lastPartialSlides) {
+        lastPartialSlides = newSlides;
+        console.log(`[KI Partial] ${newSlides} Folien generiert`);
+        socket.emit('ai-partial', { document: partialDoc });
+      }
+    };
+
     try {
-      const aiResult = await processMessage(message, currentDoc);
+      const aiResult = await processMessage(message, currentDoc, onProgress, onPartialUpdate);
 
       if (aiResult.document) {
+        // Finales Dokument speichern und an alle im Raum senden
         const update = setDocumentState(docId, aiResult.document);
         io.to(docId).emit('yjs-update',       { update: Array.from(update) });
         io.to(docId).emit('document-updated', { document: aiResult.document });
+        console.log(`[KI] Fertig: ${aiResult.document.slides?.length || 0} Folien`);
       }
+
       socket.emit('ai-response', { message: aiResult.message });
 
     } catch (err) {
@@ -197,17 +233,21 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', () => {
+  // ── Disconnect ───────────────────────────────────────────────
+  socket.on('disconnect', (reason) => {
+    console.log(`[Socket] Getrennt: ${socket.id} (${reason})`);
     if (currentDocId) {
-      io.to(currentDocId).emit('users-update', {
-        count: io.sockets.adapter.rooms.get(currentDocId)?.size || 0
-      });
+      const count = io.sockets.adapter.rooms.get(currentDocId)?.size || 0;
+      io.to(currentDocId).emit('users-update', { count });
     }
   });
 });
 
+// ─── Start ───────────────────────────────────────────────────────
 server.listen(PORT, () => {
-  console.log(`✅ Server läuft auf http://localhost:${PORT}`);
+  console.log(`\n✅ Server läuft auf http://localhost:${PORT}`);
+  console.log(`🌐 Client URL: ${CLIENT_URL}`);
   console.log(`📁 Temp-Ordner: ${os.tmpdir()}`);
-  console.log(`🐍 Python-Befehl: ${process.platform === 'win32' ? 'python' : 'python3'}`);
+  console.log(`🐍 Python: ${process.platform === 'win32' ? 'python' : 'python3'}`);
+  console.log(`⏱  Timeout: 5 Minuten\n`);
 });

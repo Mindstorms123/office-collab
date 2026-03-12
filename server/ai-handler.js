@@ -240,7 +240,7 @@ REGELN:
 
 // ─── HAUPTFUNKTION MIT STREAMING ────────────────────────────────
 
-async function processMessage(userMessage, currentDocument, onProgress) {
+async function processMessage(userMessage, currentDocument, onProgress, onPartialUpdate) {
   const docType = currentDocument?.type || 'docx';
   const systemPrompt = PROMPTS[docType] || PROMPTS['docx'];
 
@@ -254,7 +254,7 @@ async function processMessage(userMessage, currentDocument, onProgress) {
       }
     ],
     format: 'json',
-    stream: true,  // ← STREAMING AKTIVIERT
+    stream: true,
     options: {
       temperature: 0.7,
       num_predict: 4096,
@@ -263,17 +263,37 @@ async function processMessage(userMessage, currentDocument, onProgress) {
   });
 
   let raw = '';
+  let lastValidParse = null;
+  let parseAttempts = 0;
 
-  // Stream verarbeiten
   for await (const chunk of stream) {
     raw += chunk.message.content;
-    // Fortschritt melden (alle 200 Zeichen)
+    
+    // Fortschritt melden
     if (onProgress && raw.length % 200 < chunk.message.content.length) {
       onProgress(raw.length);
     }
+
+    // Alle 500 Zeichen versuchen zu parsen
+    parseAttempts++;
+    if (parseAttempts % 25 === 0 && onPartialUpdate) {
+      try {
+        // Versuche vollständiges JSON zu extrahieren
+        const match = raw.match(/\{[\s\S]*\}/);
+        if (match) {
+          const partial = JSON.parse(match[0]);
+          if (partial.document) {
+            lastValidParse = partial;
+            onPartialUpdate(partial.document);
+          }
+        }
+      } catch {
+        // Noch nicht komplett parsebar → weiter warten
+      }
+    }
   }
 
-  // JSON parsen
+  // Finales Parsing
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -283,9 +303,23 @@ async function processMessage(userMessage, currentDocument, onProgress) {
       try {
         parsed = JSON.parse(match[0]);
       } catch {
+        // Falls finales Parsing fehlschlägt, letzten validen Stand nehmen
+        if (lastValidParse) {
+          console.warn('[Parsing] Finales JSON ungültig, verwende letzten gültigen Stand');
+          return {
+            message: lastValidParse.message || 'Teilweise erstellt.',
+            document: lastValidParse.document
+          };
+        }
         throw new Error('Kein valides JSON erhalten: ' + raw.substring(0, 300));
       }
     } else {
+      if (lastValidParse) {
+        return {
+          message: lastValidParse.message || 'Teilweise erstellt.',
+          document: lastValidParse.document
+        };
+      }
       throw new Error('Kein valides JSON erhalten: ' + raw.substring(0, 300));
     }
   }
