@@ -5,129 +5,63 @@ const ollama = require('ollama').default;
 
 const PROMPTS = {
 
-pptx: `
-Du bist ein moderner Präsentationsdesigner. Du erstellst Folien als strukturierte Objekt-Listen.
-Jede Folie besteht aus einer Liste von Objekten mit exakten Positionen (in Inches, Folie = 13.33 x 7.5 inch).
+pptx: `Du bist ein Präsentationsdesigner. Erstelle moderne Folien als JSON-Objekte.
 
-Antworte NUR mit validem JSON:
-{
-  "message": "...",
-  "document": {
-    "type": "pptx",
-    "title": "...",
-    "palette": {
-      "bg1": "#0a0f1e",
-      "bg2": "#141e3a",
-      "accent1": "#38bdf8",
-      "accent2": "#818cf8",
-      "text": "#f1f5f9",
-      "sub": "#64748b",
-      "card": "#0d1526"
-    },
-    "slides": [
-      {
-        "title": "Folientitel",
-        "notes": "Sprechernotizen",
-        "objects": [
-          {
-            "type": "rect",
-            "l": 0, "t": 0, "w": 13.33, "h": 7.5,
-            "color": "#0a0f1e",
-            "rounded": 0,
-            "back": true
-          },
-          {
-            "type": "image",
-            "l": 7.0, "t": 0, "w": 6.33, "h": 7.5,
-            "query": "solar panels roof aerial",
-            "back": true
-          },
-          {
-            "type": "rect",
-            "l": 7.0, "t": 0, "w": 6.33, "h": 7.5,
-            "color": "#0a0f1e",
-            "opacity": 0.6,
-            "rounded": 0
-          },
-          {
-            "type": "rect",
-            "l": 0, "t": 0, "w": 0.08, "h": 7.5,
-            "color": "#38bdf8",
-            "rounded": 0
-          },
-          {
-            "type": "text",
-            "l": 0.5, "t": 1.8, "w": 6.2, "h": 2.2,
-            "content": "Solarenergie für Hausbesitzer",
-            "size": 52, "bold": true,
-            "color": "#f1f5f9"
-          },
-          {
-            "type": "text",
-            "l": 0.5, "t": 4.2, "w": 6.0, "h": 0.7,
-            "content": "Nutzen Sie die Kraft der Sonne",
-            "size": 22, "bold": false,
-            "color": "#64748b"
-          },
-          {
-            "type": "rect",
-            "l": 0.5, "t": 5.2, "w": 2.5, "h": 0.06,
-            "color": "#38bdf8",
-            "rounded": 0
-          }
-        ]
-      }
-    ]
-  }
-}
+WICHTIG: Gib die Folien EINZELN aus – jede Folie auf EINER Zeile (NDJSON-Format).
+Kein umschließendes Array, keine Kommentare, sofort starten.
 
-OBJEKT-TYPEN:
-- rect: Rechteck/Fläche. Felder: l,t,w,h (Inches), color (#hex), rounded (0=eckig, 50000=leicht, 100000=Kreis), opacity (0.0-1.0), back (true=Hintergrund-Layer)
-- text: Textfeld. Felder: l,t,w,h, content, size (px), bold, italic, color, align ("left"/"center"/"right")
-- image: Bild von Unsplash. Felder: l,t,w,h, query (englisch), rounded, opacity, back
+FORMAT PRO ZEILE (eine Zeile = eine fertige Folie):
+{"layout":"title","title":"Haupttitel","subtitle":"Untertitel","image":"nature landscape"}
+{"layout":"content","title":"Überschrift","bullets":["Punkt 1","Punkt 2","Punkt 3"]}
+{"layout":"two_column","title":"Vergleich","left":["Pro 1","Pro 2"],"right":["Contra 1","Contra 2"]}
+{"layout":"image_text","title":"Beispiel","text":"Beschreibung","image":"technology abstract"}
+{"layout":"end","title":"Vielen Dank","subtitle":"Fragen?"}
 
-DESIGN-PRINZIPIEN (modernes minimalistisches Design):
-- Hintergrund: tiefdunkle Farbe, fast schwarz (back: true auf dem ersten rect)
-- Bilder: immer mit leichtem dunklen Overlay drüber für Lesbarkeit
-- Typografie: großer Kontrast (riesiger Titel, kleiner Subtext)
-- Akzente: 1-2 Farben, sparsam einsetzen (dünne Linien, kleine Punkte, Karten-Rand)
-- Whitespace: viel Freiraum nutzen
-- Karten: abgerundete Rechtecke (rounded: 15000) als Hintergrund für Bullet-Gruppen
-- Bilder in Formen: image-Objekt mit rounded: 100000 für Kreis, 30000 für abgerundetes Rect
+LAYOUTS:
 
-STANDARD-FOLIEN-STRUKTUREN:
+1. title (Titelfolie)
+   - title: Haupttitel (max 50 Zeichen)
+   - subtitle: Untertitel (max 80 Zeichen)
+   - image: Unsplash-Query (englisch, 2-3 Wörter)
 
-Titelfolie:
-- Hintergrund rect (back: true)
-- Bild rechts (image mit back: true)
-- Overlay über Bild (rect mit opacity 0.6)
-- Vertikale Akzentlinie links (rect, 0.08 breit)
-- Großer Titel links
-- Kleiner Untertitel links
-- Dünne horizontale Linie unter Titel
+2. content (Bullet-Liste)
+   - title: Überschrift (max 40 Zeichen)
+   - bullets: Array mit 3-5 Punkten (je max 60 Zeichen)
+   - image: (optional) Unsplash-Query
 
-Content-Folie mit Bullets als Karten:
-- Hintergrund rect (back: true)
-- Optionales kleines Bild oben rechts (image, abgerundet)
-- Akzentbalken oben (rect, volle Breite, 0.07 hoch)
-- Dunklere Titelzeile (rect)
-- Titel-Text
-- Pro Bullet: card-rect (abgerundet, l=0.4) + linker Rand (rect, 0.08 breit) + Text
+3. two_column (Zweispaltig)
+   - title: Überschrift
+   - leftTitle: Linke Spalte (z.B. "Vorteile")
+   - left: 3-4 Punkte
+   - rightTitle: Rechte Spalte (z.B. "Nachteile")
+   - right: 3-4 Punkte
 
-Abschlussfolie:
-- Großes Bild als Hintergrund (image mit back: true, volle Größe)
-- Dunkles Overlay (rect mit opacity 0.7)
-- Zentrierter großer Text
-- Akzentlinie
+4. image_text (Bild + Text)
+   - title: Überschrift
+   - text: Beschreibung (max 200 Zeichen)
+   - image: Unsplash-Query
 
-WICHTIG FÜR PERFORMANCE:
-- Erstelle maximal 5 Folien
-- Pro Folie maximal 8-10 Objekte
-- Halte Texte in "content" kurz und prägnant
-- Kompaktes JSON ohne unnötige Felder
+5. end (Abschlussfolie)
+   - title: "Vielen Dank" / "Fragen?"
+   - subtitle: Kontaktinfo (optional)
+   - image: (optional)
 
-Antworte auf Deutsch.
-`,
+REGELN:
+✓ Maximal 5-6 Folien
+✓ Kurze prägnante Texte
+✓ Bilder: englische Queries, 2-3 Wörter (z.B. "solar panels roof", "business team meeting")
+✓ Pro Folie: 3-5 Bullets maximal
+✓ Jede Folie SOFORT auf einer Zeile ausgeben
+✓ Keine umschließende Struktur, kein "message", kein "document"
+
+BEISPIEL-OUTPUT:
+{"layout":"title","title":"Solarenergie für Hausbesitzer","subtitle":"Nutzen Sie die Kraft der Sonne","image":"solar panels roof"}
+{"layout":"content","title":"Warum Solar?","bullets":["Senkung der Stromkosten um bis zu 70%","Unabhängigkeit von Energieversorgern","Wertsteigerung der Immobilie","Umweltschutz durch CO2-Reduktion"]}
+{"layout":"two_column","title":"Vor- und Nachteile","leftTitle":"Vorteile","left":["Langfristige Ersparnis","Staatliche Förderungen","Geringe Wartung"],"rightTitle":"Nachteile","right":["Hohe Anfangsinvestition","Abhängig vom Wetter","Dacheignung erforderlich"]}
+{"layout":"end","title":"Vielen Dank!","subtitle":"Fragen? → info@solar-beratung.de"}
+
+Antworte auf Deutsch (außer image-Queries). Starte SOFORT mit der ersten Folie.`
+,
 
   docx: `
 Du bist ein professioneller Dokumenten-Autor und Texter.
@@ -257,8 +191,8 @@ async function processMessage(userMessage, currentDocument, onProgress, onPartia
     stream: true,
     options: {
       temperature: 0.7,
-      num_predict: 4096,
-      num_ctx: 8192
+      num_predict: 2048,
+      num_ctx: 4096
     }
   });
 
